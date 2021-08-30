@@ -22,9 +22,10 @@ contract InFerToken is ERC20, Ownable {
     InFerDividendTracker public dividendTracker;
 
     address public deadWallet = 0x000000000000000000000000000000000000dEaD;
-
-    uint256 public maxSellTransactionAmount = 1000000 * (10**18);
+    
     uint256 public swapTokensAtAmount = 2000000 * (10**18);
+    uint256 public maxSellTransactionAmount = 1000000 * (10**18);
+    uint256 public immutable vaultSellFeeIncrease = 200;
     
     mapping(address => bool) public _isBlacklisted;
 
@@ -325,15 +326,6 @@ contract InFerToken is ERC20, Ownable {
             super._transfer(from, to, 0);
             return;
         }
-        
-        if( 
-        	!swapping &&
-            automatedMarketMakerPairs[to] && // sells only by detecting transfer to automated market maker pair
-        	from != address(uniswapV2Router) && //router -> pair is removing liquidity which shouldn't have max
-            !_isExcludedFromFees[to] //no max for those excluded from fees
-        ) {
-            require(amount <= maxSellTransactionAmount, "Sell transfer amount exceeds the maxSellTransactionAmount.");
-        }
 
 		uint256 contractTokenBalance = balanceOf(address(this));
 
@@ -345,14 +337,26 @@ contract InFerToken is ERC20, Ownable {
             from != owner() &&
             to != owner()
         ) {
+            if(automatedMarketMakerPairs[to]) {
+                require(amount <= maxSellTransactionAmount, "Sell transfer amount exceeds the maxSellTransactionAmount.");
+            }
+            
             swapping = true;
-
+            
+            if(automatedMarketMakerPairs[to]) {
+                uint256 newVaultFee = vaultFee.mul(vaultSellFeeIncrease).div(100);
+                uint256 newTotalFees = BNBRewardsFee.add(liquidityFee).add(marketingFee).add(newVaultFee);
+                uint256 vaultTokens = contractTokenBalance.mul(newVaultFee).div(newTotalFees);
+                swapAndSendToVault(vaultTokens);
+            } else
+            if(!automatedMarketMakerPairs[to]) {
+                uint256 vaultTokens = contractTokenBalance.mul(vaultFee).div(totalFees);
+                swapAndSendToVault(vaultTokens);
+            }
+            
             uint256 marketingTokens = contractTokenBalance.mul(marketingFee).div(totalFees);
             swapAndSendToMarketing(marketingTokens);
             
-            uint256 vaultTokens = contractTokenBalance.mul(vaultFee).div(totalFees);
-            swapAndSendToVault(vaultTokens);
-
             uint256 swapTokens = contractTokenBalance.mul(liquidityFee).div(totalFees);
             swapAndLiquify(swapTokens);
 
@@ -371,13 +375,18 @@ contract InFerToken is ERC20, Ownable {
         }
 
         if(takeFee) {
+            
         	uint256 fees = amount.mul(totalFees).div(100);
+        	
         	if(automatedMarketMakerPairs[to]){
-        	    fees += amount.mul(1).div(100);
+        	    uint256 vaultFeeIncrease = vaultFee.mul(vaultSellFeeIncrease).div(100);
+                uint256 newtotalFees = BNBRewardsFee.add(vaultFeeIncrease).add(marketingFee).add(liquidityFee);
+                fees = amount.mul(newtotalFees).div(100);
         	}
         	amount = amount.sub(fees);
 
             super._transfer(from, address(this), fees);
+            
         }
 
         super._transfer(from, to, amount);
